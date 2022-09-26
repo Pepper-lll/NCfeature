@@ -40,18 +40,27 @@ def train(train_loader, model, criterion_sup, criterion_ft1, \
             input = input.cuda(args.gpu, non_blocking=True)
         target = target.cuda(args.gpu, non_blocking=True)
         all_targets.extend(target.cpu().numpy())
-        # compute output
-        feature, output = model(input)
+        if args.mixup is True:
+            images, targets_a, targets_b, lam = mixup_data(input, target, alpha=args.mixup_alpha)
+            feature, output = model(images)
+        else:
+            feature, output = model(input)
         _, preds = torch.max(output, 1)
         all_preds.extend(preds.cpu().numpy())
         if args.logit_adj_train:
             output += args.logit_adjustments
         if str(criterion_sup) == 'MSELoss()':
-            sup_loss = criterion_sup(output, F.one_hot(target, num_classes=args.num_classes).float())
-            cri = torch.nn.MSELoss(reduction='sum')
-            sum_loss += cri(output, F.one_hot(target, num_classes=args.num_classes).float()).item()
+            if args.mixup:
+                sup_loss = mixup_criterion(criterion_sup, output, targets_a, targets_b, lam)
+            else:
+                sup_loss = criterion_sup(output, F.one_hot(target, num_classes=args.num_classes).float())
+                cri = torch.nn.MSELoss(reduction='sum')
+                sum_loss += cri(output, F.one_hot(target, num_classes=args.num_classes).float()).item()
         else:
-            sup_loss = criterion_sup(output, target)
+            if args.mixup:
+                sup_loss = mixup_criterion(criterion_sup, output, targets_a, targets_b, lam)
+            else:
+                sup_loss = criterion_sup(output, target)
         
         # feature = model.forward_embedding(input)
         H.append(feature.detach())
@@ -63,8 +72,12 @@ def train(train_loader, model, criterion_sup, criterion_ft1, \
         elif args.NC2Loss == 'v2': # avg of cosine to -1/(k-1)
             ft_loss2, max_cos = NC2Loss_v2(c_means)
         center_reg = zero_center(c_means)
-        loss = sup_loss + args.lamda1 * ft_loss1 + args.lamda2 * ft_loss2 + args.lamda3 * center_reg
-        
+        ft_norm2 = 1 / feature.size(0) * (feature.norm() ** 2)
+        if epoch >= args.start_ft:
+            loss = sup_loss + args.lamda1 * ft_loss1 + args.lamda2 * ft_loss2 + args.lamda3 * ft_norm2
+        else:
+            loss = sup_loss
+            
         for c in range(C):
             # features belonging to class c
             idxs = (target == c).nonzero(as_tuple=True)[0]
@@ -86,7 +99,7 @@ def train(train_loader, model, criterion_sup, criterion_ft1, \
         top5.update(acc5[0], input.size(0))
 
         # compute gradient and do SGD step
-        if args.lamda1 > 0. and optimizer_ftloss:
+        if args.lamda1 > 0. and optimizer_ftloss and epoch >= args.start_ft:
             # print('compute gradient of center')
             optimizer_ftloss.zero_grad()
             optimizer_model.zero_grad()
@@ -203,7 +216,7 @@ def train_cls(train_loader, model, criterion, optimizer, epoch, log, tf_writer, 
     top1 = AverageMeter('Acc@1', ':6.2f')
     top5 = AverageMeter('Acc@5', ':6.2f')
     
-    model.eval()
+    model.train()
 
     end = time.time()
     all_targets = []
@@ -217,7 +230,7 @@ def train_cls(train_loader, model, criterion, optimizer, epoch, log, tf_writer, 
         # compute output
         all_targets.extend(target.cpu().numpy())
         # compute output
-        output = model(input)
+        feature, output = model(input)
         _, preds = torch.max(output, 1)
         all_preds.extend(preds.cpu().numpy())
         if str(criterion) == 'MSELoss()':
@@ -341,18 +354,18 @@ def validate(val_loader, model, criterion_sup, epoch, tf_writer, args, cls=False
     for c in range(C):
         if N[c] > 0:
             mean[c] /= N[c]
-    if epoch == args.epochs - 1:
-        M = torch.stack(mean)
-        H = torch.cat(H).detach()
-        Y = torch.from_numpy(np.array(all_targets)).cuda()
-        # print('Y:', Y.size(), 'H:', H.size())
-        Sw_invSb = myNC1(Y, H, C, M)
-        print('test tr(Sw/Sb):', Sw_invSb)
-        if tf_writer:
-            tf_writer.add_scalar('analyze_test/tr(Sw_invSb)', Sw_invSb, epoch)
-            # tf_writer.add_scalars('analyze_test/NC1_feature_to_center', {str(i):x for i, x in enumerate(dis)}, epoch+args.epochs if cls else epoch)
-            tf_writer.add_scalar('loss/test_'+ flag, losses.avg, epoch+args.epochs if cls else epoch)
-            tf_writer.add_scalar('acc/test_' + flag + '_top1', top1.avg, epoch+args.epochs if cls else epoch)
-            tf_writer.add_scalar('acc/test_' + flag + '_top5', top5.avg, epoch+args.epochs if cls else epoch)
+    # if epoch == args.epochs - 1:
+    #     M = torch.stack(mean)
+    #     H = torch.cat(H).detach()
+    #     Y = torch.from_numpy(np.array(all_targets)).cuda()
+    #     # print('Y:', Y.size(), 'H:', H.size())
+    #     Sw_invSb = myNC1(Y, H, C, M)
+    #     print('test tr(Sw/Sb):', Sw_invSb)
+    #     if tf_writer:
+    #         tf_writer.add_scalar('analyze_test/tr(Sw_invSb)', Sw_invSb, epoch)
+    #         # tf_writer.add_scalars('analyze_test/NC1_feature_to_center', {str(i):x for i, x in enumerate(dis)}, epoch+args.epochs if cls else epoch)
+    #         tf_writer.add_scalar('loss/test_'+ flag, losses.avg, epoch+args.epochs if cls else epoch)
+    #         tf_writer.add_scalar('acc/test_' + flag + '_top1', top1.avg, epoch+args.epochs if cls else epoch)
+    #         tf_writer.add_scalar('acc/test_' + flag + '_top5', top5.avg, epoch+args.epochs if cls else epoch)
     return top1.avg, sup_losses.avg, np.array(all_targets), np.array(all_preds)
     #, mean_norm_std, angle_std, large_w, small_w, large_b, small_b

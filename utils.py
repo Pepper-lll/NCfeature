@@ -249,6 +249,41 @@ def shot_acc(preds, labels, train_data, many_shot_thr=100, low_shot_thr=20, acc_
     else:
         return np.mean(many_shot), np.mean(median_shot), np.mean(low_shot)
 
+def weighted_shot_acc (preds, labels, ws, train_data, many_shot_thr=100, low_shot_thr=20):
+    if isinstance(train_data, np.ndarray):
+        training_labels = np.array(train_data).astype(int)
+    elif str(train_data)[7:16].strip() =='CIFAR10' or str(train_data)[7:16].strip() =='CIFAR100':
+        training_labels = np.array(train_data.targets).astype(int)
+    else:
+        training_labels = np.array(train_data.labels).astype(int)
+
+    if isinstance(preds, torch.Tensor):
+        preds = preds.detach().cpu().numpy()
+        labels = labels.detach().cpu().numpy()
+    elif isinstance(preds, np.ndarray):
+        pass
+    else:
+        raise TypeError('Type ({}) of preds not supported'.format(type(preds)))
+    train_class_count = []
+    test_class_count = []
+    class_correct = []
+    for l in np.unique(labels):
+        train_class_count.append(len(training_labels[training_labels == l]))
+        test_class_count.append(ws[labels==l].sum())
+        class_correct.append(((preds[labels==l] == labels[labels==l]) * ws[labels==l]).sum())
+
+    many_shot = []
+    median_shot = []
+    low_shot = []
+    for i in range(len(train_class_count)):
+        if train_class_count[i] > many_shot_thr:
+            many_shot.append((class_correct[i] / test_class_count[i]))
+        elif train_class_count[i] < low_shot_thr:
+            low_shot.append((class_correct[i] / test_class_count[i]))
+        else:
+            median_shot.append((class_correct[i] / test_class_count[i]))
+    return np.mean(many_shot), np.mean(median_shot), np.mean(low_shot)
+
 def mic_acc_cal(preds, labels):
     if isinstance(labels, tuple):
         assert len(labels) == 3
@@ -259,6 +294,10 @@ def mic_acc_cal(preds, labels):
         # print(len(preds), len(labels))
         # print(type(preds), type(labels))
         acc_mic_top1 = (preds == labels).sum().item() / len(labels)
+    return acc_mic_top1
+
+def weighted_mic_acc_cal(preds, labels, ws):
+    acc_mic_top1 = ws[preds == labels].sum() / ws.sum()
     return acc_mic_top1
 
 def eval_with_preds(train_data, labels, preds, log):

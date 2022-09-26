@@ -25,6 +25,7 @@ from losses import NC1Loss, NC1Loss_1, CenterLoss, NC2Loss, NC2Loss_v1, NC2Loss_
 # from analyze_collapse import neural_collapse_embedding
 from collapse_analysis import analysisNC, MSE_decom
 from data import dataloader
+from data.ClassAwareSampler import ClassAwareSampler
 from scipy.sparse.linalg import svds
 from randaugment import rand_augment_transform
 # model_names = sorted(name for name in models.__dict__
@@ -59,7 +60,7 @@ parser.add_argument('--rand_number', default=0, type=int, help='fix random numbe
 parser.add_argument('--exp_str', default='0', type=str, help='number to indicate which experiment it is')
 parser.add_argument('-j', '--num_workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=90, type=int, metavar='N',
+parser.add_argument('--epochs', default=100, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--cls_epochs', default=10, type=int, metavar='N2',
                     help='number of epochs to train classifier')
@@ -72,6 +73,8 @@ parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
 parser.add_argument('--lr_schedule', default='cosine', type=str, choices = ['step', 'cosine']
                     , help='initial learning rate')
+parser.add_argument('--lr_schedule_cls', default='step', type=str, choices = ['step', 'cosine']
+                    , help='initial learning rate')
 parser.add_argument('--lamda1', default=0.01, type=float,
                     metavar='L1', help='lamda of feature loss1')
 parser.add_argument('--lamda2', default=0.1, type=float,
@@ -80,10 +83,12 @@ parser.add_argument('--lamda3', default=0., type=float,
                     metavar='L3', help='lamda of zero center regularization')
 parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
                     help='momentum')
+parser.add_argument('--opt', default='sgd', type=str, choices=['sgd', 'adam', 'adamw'], 
+                    help='optimizer')
 parser.add_argument('--wd', '--weight-decay', default=5e-4, type=float,
                     metavar='W', help='weight decay (default: 1e-4)',
                     dest='weight_decay')
-parser.add_argument('--cls_wd', default=5e-4, type=float,
+parser.add_argument('--cls_wd', default=0., type=float,
                     help='classifier weight decay (default: 0.1 follow )')
 parser.add_argument('--alpha', default=0.5, type=float, metavar='A',
                     help='learning rate for center (class means)')
@@ -113,7 +118,10 @@ parser.add_argument('--tro_post_range', help='check diffrent val of tro in post 
 parser.add_argument('--logit_adj_train', help='adjust logits in trainingc', default=False, action='store_true')
 parser.add_argument('--tro_train', default=1.0, type=float, help='tro for logit adj train')
 parser.add_argument('--CB_cls',default=False, action='store_true', help='use class balanced loss to retrain the classifier')
+parser.add_argument('--CBS',default=False, action='store_true', help='use class balanced sampler to retrain the classifier')
 parser.add_argument('--s_aug',default=False, action='store_true', help='use strengthen augmentation')
+parser.add_argument('--mixup',default=False, action='store_true', help='use strengthen augmentation')
+parser.add_argument('--mixup_alpha', default=0.2, type=float, help='alpha for mix up')
 
 best_acc1 = 0
 
@@ -121,9 +129,9 @@ def main():
     args = parser.parse_args()
     # prepare_folders(args)
     if args.output:
-        args.output_dir = '_'.join(
-            [args.dataset, args.arch, 'batchsize', str(args.batch_size), 'epochs', str(args.epochs), 'l1', str(args.lamda1),
-            'l2', str(args.lamda2), 'lr', str(args.lr)])
+        args.output_dir = args.dataset + '/' + args.arch + '/' + 'mixup' if args.mixup else ''+ \
+            '_'.join([str(args.train_rule), 'batchsize', str(args.batch_size), 'epochs', str(args.epochs), 'l1', str(args.lamda1),
+            'l2', str(args.lamda2),'ft', str(args.start_ft), 'lr', str(args.lr), str(args.lr_schedule)])
     output_dir = Path(args.output_dir)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     if args.output_dir:
@@ -178,12 +186,23 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         # DataParallel will divide and allocate batch_size to all available GPUs
         model = torch.nn.DataParallel(model).cuda()
-    optimizer_model = torch.optim.SGD([{'params':model.parameters(),'lr':args.lr}], 
-                                lr=args.lr,
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    if args.opt == 'sgd':
+        optimizer_model = torch.optim.SGD([{'params':model.parameters(),'lr':args.lr}], 
+                                    lr=args.lr,
+                                    momentum=args.momentum,
+                                    weight_decay=args.weight_decay)
+    elif args.opt == 'adam':
+        optimizer_model = torch.optim.Adam([{'params':model.parameters(),'lr':args.lr}],
+                                    lr=args.lr,
+                                    weight_decay=args.weight_decay)
+    elif args.opt == 'adamw':
+        optimizer_model = torch.optim.AdamW([{'params':model.parameters(),'lr':args.lr}],
+                                    lr=args.lr,
+                                    weight_decay=args.weight_decay)
+    else:
+        print('uinsupportable optimizer!!!')
     if args.lr_schedule =='step':
-        scheduler = lr_scheduler.MultiStepLR(optimizer_model, milestones=[115, 175], gamma=0.1)  
+        scheduler = lr_scheduler.MultiStepLR(optimizer_model, milestones=[int(args.epochs/2), args.epochs-20], gamma=0.01)  
     elif args.lr_schedule == 'cosine':
         scheduler = lr_scheduler.CosineAnnealingLR(optimizer_model, args.epochs, eta_min=0)
     
@@ -248,9 +267,10 @@ def main_worker(gpu, ngpus_per_node, args):
                 args.lamda1 = 0.1
             print('lamda1:', args.lamda1)
             print('alpha:', optimizer_ftloss.param_groups[-1]['lr'])
+
         if args.train_rule == 'DRW':
             train_sampler = None
-            idx = epoch // 70
+            idx = epoch // (args.epochs-20)
             betas = [0, 0.9999]
             effective_num = 1.0 - np.power(betas[idx], cls_num_list)
             per_cls_weights = (1.0 - betas[idx]) / np.array(effective_num)
@@ -276,7 +296,7 @@ def main_worker(gpu, ngpus_per_node, args):
             return
 
         # # train for one epoch
-        if args.lamda1 == 0.:
+        if args.lamda1 == 0. and args.lamda2 == 0. and args.lamda3 == 0.:
             print('==========> Not add feature loss <==========')
             train_loss, sup_loss, ft_loss1, ft_loss2, max_cos, train_targets, train_preds, train_means, batch_means = \
                 train(train_loader, model, criterion_sup, criterion_ft1,\
@@ -363,7 +383,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 'best_acc1': best_acc1,
                 'optimizer' : optimizer_model.state_dict(),
                 }, is_best=False, filename=output_dir / 'checkpoint_best.pth')
-          
+        state_dict_pre = model.state_dict()  
     if args.CRT:
         print("====> Start re-training classifier")
         # num_classes = 100 if args.dataset == 'cifar100' else 10
@@ -384,12 +404,9 @@ def main_worker(gpu, ngpus_per_node, args):
                 print(name)
         if use_norm:
             model.fc = nn.Linear(ft_dim, args.num_classes).cuda()
-        if args.gpu is not None:
-            model.fc.weight.data.normal_(mean=0.0, std=0.01)
-            model.fc.bias.data.zero_()
-        else:
-            model.fc.weight.data.normal_(mean=0.0, std=0.01)
-            model.fc.bias.data.zero_()
+
+        model.fc.weight.data.normal_(mean=0.0, std=0.01)
+        model.fc.bias.data.zero_()
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
             model = model.cuda(args.gpu)
@@ -400,10 +417,10 @@ def main_worker(gpu, ngpus_per_node, args):
         optimizer = torch.optim.SGD(parameters, args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.cls_wd)
-        if args.lr_schedule == 'cosine':
+        if args.lr_schedule_cls == 'cosine':
             cls_scheduler = lr_scheduler.CosineAnnealingLR(optimizer, args.cls_epochs, eta_min=0)
-        elif args.lr_schedule == 'step':
-            cls_scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[4, 6], gamma=0.1)
+        elif args.lr_schedule_cls == 'step':
+            cls_scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[10, 15], gamma=0.1)
 
         cudnn.benchmark = True
         if args.CB_cls:
@@ -413,16 +430,22 @@ def main_worker(gpu, ngpus_per_node, args):
             per_cls_weights = (1.0 - beta) / np.array(effective_num)
             per_cls_weights = per_cls_weights / np.sum(per_cls_weights) * len(cls_num_list)
             per_cls_weights = torch.FloatTensor(per_cls_weights).cuda(args.gpu)
+        elif args.CBS:
+            # oversample，所有类别数量和最多数类别一致 1280*1000
+            # sampler = ClassAwareSampler
+            train_sampler = ClassAwareSampler(train_dataset, num_samples_cls=4)
+            per_cls_weights = None
         else:
-            # train_sampler = ImbalancedDatasetSampler(train_dataset)
-            class_counts = np.array(class_count(train_dataset))
-            class_weights = 1. / class_counts
-            # print("class weights: ", class_weights)
-            sample_weights = [0] * len(train_dataset)
-            for idx, (data, label, index) in enumerate(train_dataset):
-                class_weight = class_weights[label]
-                sample_weights[idx] = class_weight
-            train_sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
+            # oversample minority and down sample majority. 训练样本总数不变
+            train_sampler = ImbalancedDatasetSampler(train_dataset)
+            # class_counts = np.array(class_count(train_dataset))
+            # class_weights = 1. / class_counts
+            # # print("class weights: ", class_weights)
+            # sample_weights = [0] * len(train_dataset)
+            # for idx, (data, label, index) in enumerate(train_dataset):
+            #     class_weight = class_weights[label]
+            #     sample_weights[idx] = class_weight
+            # train_sampler = WeightedRandomSampler(sample_weights, num_samples=len(sample_weights), replacement=True)
             per_cls_weights = None
 
         train_loader = torch.utils.data.DataLoader(
@@ -444,7 +467,7 @@ def main_worker(gpu, ngpus_per_node, args):
             weight_angle = cls_margin(W.detach(), False)[1]
             print('means and classifier duality:',MW_dist.item())
             print('minimum angle between train classifiers:',weight_angle)
-            acc1, val_loss, valid_targets, valid_preds = validate(val_loader, model, train_means, criterion, None, epoch, log_testing, tf_writer, args, cls=True)
+            acc1, val_loss, valid_targets, valid_preds = validate(val_loader, model, criterion, epoch, tf_writer, args, cls=True)
             valid_accs = shot_acc(valid_preds, valid_targets, train_dataset)
             valid_str = 'valid: Many shot - '+str(round(valid_accs[0]*100, 2))+\
                         '; Median shot - '+str(round(valid_accs[1]*100, 2))+ \
@@ -479,7 +502,7 @@ def main_worker(gpu, ngpus_per_node, args):
                     'best_acc1': best_acc1,
                     'optimizer' : optimizer.state_dict(),
                 }, is_best=False, filename=output_dir / 'checkpoint_cls.pth')
-            sanity_check(model.state_dict(), state_dict_pre)
+            # sanity_check(model.state_dict(), state_dict_pre)
         
 def sanity_check(state_dict, state_dict_pre):
     """
