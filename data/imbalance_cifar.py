@@ -7,7 +7,7 @@ import random
 class IMBALANCECIFAR10(torchvision.datasets.CIFAR10):
     cls_num = 10
 
-    def __init__(self, phase, imbalance_ratio, root = '/gruntdata5/kaihua/datasets', imb_type='exp'):
+    def __init__(self, phase, imbalance_ratio, root = '~/data/cifar10_raw', imb_type='exp'):
         train = True if phase == "train" else False
         super(IMBALANCECIFAR10, self).__init__(root, train, transform=None, target_transform=None, download=True)
         self.train = train
@@ -17,13 +17,11 @@ class IMBALANCECIFAR10(torchvision.datasets.CIFAR10):
             self.transform = transforms.Compose([
                 transforms.RandomCrop(32, padding=4),
                 transforms.RandomHorizontalFlip(),
-                #transforms.Resize(224),
                 transforms.ToTensor(),
                 transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
             ])
         else:
             self.transform = transforms.Compose([
-                             #transforms.Resize(224),
                              transforms.ToTensor(),
                              transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
                             ])

@@ -1,6 +1,4 @@
 import math
-from turtle import forward
-from pyparsing import alphas
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -72,6 +70,7 @@ class NC1Loss(nn.Module):
         self.feat_dim = feat_dim
         self.use_gpu = use_gpu
 
+        # self.means: (num_classes, feat_dim) Learned means
         if self.use_gpu:
             self.means = nn.Parameter(torch.randn(self.num_classes, self.feat_dim).cuda())
         else:
@@ -82,6 +81,9 @@ class NC1Loss(nn.Module):
         Args:
             x: feature matrix with shape (batch_size, feat_dim).
             labels: ground truth labels with shape (batch_size).
+        Return:
+            loss: NC1 loss.
+            self.means: learned means.
         """
         batch_size = x.size(0)
         distmat = torch.pow(x, 2).sum(dim=1, keepdim=True).expand(batch_size, self.num_classes) + \
@@ -136,7 +138,7 @@ class NC1Loss_1(nn.Module):
         dist = distmat * mask.float()
         D = torch.sum(dist, dim=0)
         N = mask.float().sum(dim=0) + 1e-5
-        N = N ** 2
+        N = N ** 2 # why square?
         # print()
         # loss = dist.clamp(min=1e-12, max=1e+12).sum() / batch_size
         loss = (D/N).clamp(min=1e-12, max=1e+12).sum() / self.num_classes
@@ -147,6 +149,13 @@ class NC1Loss_1(nn.Module):
 def NC2Loss(means):
     '''
     NC2 loss v0: maximize the average minimum angle of each centered class mean
+    
+    Args:
+        means: (num_classes, feat_dim)
+    
+    Returns:
+        loss: NC2 loss
+        max_cosine: scalar, maxium cosine selected from all class_pairs
     '''
     g_mean = means.mean(dim=0)
     centered_mean = means - g_mean
