@@ -210,7 +210,7 @@ class RIDELoss(nn.Module):
         batch_m = batch_m.view((-1, 1))
         x_m = x - batch_m * self.s
 
-        final_output = torch.where(index, x_m, x)
+        final_output = torch.where(index.bool(), x_m, x)
         return final_output
 
     def forward(self, output_logits, target, extra_info=None):

@@ -87,11 +87,14 @@ class ImageNetLTDataLoader(DataLoader):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
+        train_txt = '/comp_robot/caohe/datasets/ImageNet_LT/ImageNet_LT_train.txt'
+        val_txt = '/comp_robot/caohe/datasets/ImageNet_LT/ImageNet_LT_val.txt'
+        text_txt = '/comp_robot/caohe/datasets/ImageNet_LT/ImageNet_LT_test.txt'
         if training:
-            dataset = LT_Dataset(data_dir, data_dir + '/ImageNet_LT_train.txt', train_trsfm)
-            val_dataset = LT_Dataset(data_dir, data_dir + '/ImageNet_LT_val.txt', test_trsfm)
+            dataset = LT_Dataset(data_dir, train_txt, train_trsfm)
+            val_dataset = LT_Dataset(data_dir, val_txt, test_trsfm)
         else: # test
-            dataset = LT_Dataset(data_dir, data_dir + '/ImageNet_LT_test.txt', test_trsfm)
+            dataset = LT_Dataset(data_dir, text_txt, test_trsfm)
             val_dataset = None
 
         self.dataset = dataset
