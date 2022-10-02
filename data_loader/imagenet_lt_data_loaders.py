@@ -133,7 +133,8 @@ class ImageNetLTDataLoader(DataLoader):
         super().__init__(dataset=self.dataset, **self.init_kwargs, sampler=sampler) # Note that sampler does not apply to validation set
 
     def split_validation(self):
-        # If you do not want to validate:
-        return None
-        # If you want to validate:
-        # return DataLoader(dataset=self.val_dataset, **self.init_kwargs)
+        # # If you do not want to validate:
+        # return None
+        
+        #If you want to validate:
+        return DataLoader(dataset=self.val_dataset, **self.init_kwargs)

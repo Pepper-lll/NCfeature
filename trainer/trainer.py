@@ -1,6 +1,8 @@
+from tqdm import tqdm
 import numpy as np
 import torch
 from torchvision.utils import make_grid
+
 from base import BaseTrainer
 from utils import inf_loop, MetricTracker, load_state_dict, rename_parallel_state_dict, autocast, use_fp16
 import model.model as module_arch
@@ -75,7 +77,7 @@ class Trainer(BaseTrainer):
         if hasattr(self.criterion, "_hook_before_epoch"):
             self.criterion._hook_before_epoch(epoch)
 
-        for batch_idx, data in enumerate(self.data_loader):
+        for batch_idx, data in enumerate(tqdm(self.data_loader)):
             if self.distill and len(data) == 4:
                 data, target, idx, contrast_idx = data
                 idx, contrast_idx = idx.to(self.device), contrast_idx.to(self.device)
@@ -134,6 +136,7 @@ class Trainer(BaseTrainer):
                     if isinstance(output, dict):
                         output = output["output"]
 
+                    # TODO: add support for NC loss
                     if self.distill:
                         loss = self.criterion(student=output, target=target, teacher=teacher, extra_info=extra_info)
                     elif self.add_extra_info:
@@ -167,7 +170,8 @@ class Trainer(BaseTrainer):
                 break
         log = self.train_metrics.result()
 
-        if self.do_validation:
+        if self.do_validation and epoch % 20 == 0:
+            self.logger.info(f"Start validation at epoch {epoch} ...")
             val_log = self._valid_epoch(epoch)
             log.update(**{'val_'+k : v for k, v in val_log.items()})
 
@@ -191,7 +195,7 @@ class Trainer(BaseTrainer):
                 confidence_model = True
             else:
                 confidence_model = False
-            for batch_idx, (data, target) in enumerate(self.valid_data_loader):
+            for batch_idx, (data, target) in enumerate(tqdm(self.valid_data_loader)):
                 data, target = data.to(self.device), target.to(self.device)
 
                 if confidence_model:
