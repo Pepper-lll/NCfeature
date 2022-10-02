@@ -1,5 +1,7 @@
 import torch
 import torch.nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from abc import abstractmethod
 from numpy import inf
 from logger import TensorboardWriter
@@ -12,16 +14,11 @@ class BaseTrainer:
     def __init__(self, model, criterion, metric_ftns, optimizer, config):
         self.config = config
         self.logger = config.get_logger('trainer', config['trainer']['verbosity'])
-
-        # setup GPU device if available, move model into configured device
-        self.device, device_ids = self._prepare_device(config['n_gpu'])
-        self.device_ids = device_ids
-        self.model = model
-        self.model = self.model.to(self.device)
-
-        self.real_model = self.model
-        if len(self.device_ids) > 1:
-            self.model = torch.nn.DataParallel(self.model, device_ids=device_ids)
+        
+        self.device = torch.device(f'cuda:{config.local_rank}')
+        model.to(self.device)
+        self.model = DDP(model, device_ids=[config.local_rank], broadcast_buffers=False)
+        self.real_model = self.model.module
 
         self.criterion = criterion.to(self.device)
         self.metric_ftns = metric_ftns
@@ -51,12 +48,14 @@ class BaseTrainer:
         self.writer = TensorboardWriter(config.log_dir, self.logger, cfg_trainer['tensorboard'])
 
         if config.load_crt is not None:
-            print("Loading from cRT pretrain: {}".format(config.load_crt))
-            self._load_crt(config.load_crt)
+            if dist.get_rank() == 0:
+                print("Loading from cRT pretrain: {}".format(config.load_crt))
+                self._load_crt(config.load_crt)
 
         if config.resume is not None:
-            state_dict_only = config._config.get("resume_state_dict_only", False)
-            self._resume_checkpoint(config.resume, state_dict_only=state_dict_only)
+            if dist.get_rank() == 0:
+                state_dict_only = config._config.get("resume_state_dict_only", False)
+                self._resume_checkpoint(config.resume, state_dict_only=state_dict_only)
 
     @abstractmethod
     def _train_epoch(self, epoch):
@@ -72,64 +71,46 @@ class BaseTrainer:
         Full training logic
         """
         not_improved_count = 0
-        self.logger.info("Start training...")
         for epoch in range(self.start_epoch, self.epochs + 1):
             result = self._train_epoch(epoch)
+            if dist.get_rank()==0:
+                # save logged informations into log dict
+                log = {'epoch': epoch}
+                log.update(result)
 
-            # save logged informations into log dict
-            log = {'epoch': epoch}
-            log.update(result)
+                # print logged informations to the screen
+                for key, value in log.items():
+                    self.logger.info('    {:15s}: {}'.format(str(key), value))
 
-            # print logged informations to the screen
-            for key, value in log.items():
-                self.logger.info('    {:15s}: {}'.format(str(key), value))
+                # evaluate model performance according to configured metric, save best checkpoint as model_best
+                best = False
+                if self.mnt_mode != 'off':
+                    try:
+                        # check whether model performance improved or not, according to specified metric(mnt_metric)
+                        improved = (self.mnt_mode == 'min' and log[self.mnt_metric] <= self.mnt_best) or \
+                                (self.mnt_mode == 'max' and log[self.mnt_metric] >= self.mnt_best)
+                    except KeyError:
+                        self.logger.warning("Warning: Metric '{}' is not found. "
+                                            "Model performance monitoring is disabled.".format(self.mnt_metric))
+                        self.mnt_mode = 'off'
+                        improved = False
 
-            # evaluate model performance according to configured metric, save best checkpoint as model_best
-            best = False
-            if self.mnt_mode != 'off':
-                try:
-                    # check whether model performance improved or not, according to specified metric(mnt_metric)
-                    improved = (self.mnt_mode == 'min' and log[self.mnt_metric] <= self.mnt_best) or \
-                               (self.mnt_mode == 'max' and log[self.mnt_metric] >= self.mnt_best)
-                except KeyError:
-                    self.logger.warning("Warning: Metric '{}' is not found. "
-                                        "Model performance monitoring is disabled.".format(self.mnt_metric))
-                    self.mnt_mode = 'off'
-                    improved = False
+                    if improved:
+                        self.mnt_best = log[self.mnt_metric]
+                        not_improved_count = 0
+                        best = True
+                    else:
+                        not_improved_count += 1
 
-                if improved:
-                    self.mnt_best = log[self.mnt_metric]
-                    not_improved_count = 0
-                    best = True
-                else:
-                    not_improved_count += 1
+                    if not_improved_count > self.early_stop:
+                        self.logger.info("Validation performance didn\'t improve for {} epochs. "
+                                        "Training stops.".format(self.early_stop))
+                        break
 
-                if not_improved_count > self.early_stop:
-                    self.logger.info("Validation performance didn\'t improve for {} epochs. "
-                                     "Training stops.".format(self.early_stop))
-                    break
-
-            if epoch % self.save_period == 0:
-                self._save_checkpoint(epoch, save_best=best)
-            elif best:
-                self._save_checkpoint(epoch, save_best=True, best_only=True)
-
-    def _prepare_device(self, n_gpu_use):
-        """
-        setup GPU device if available, move model into configured device
-        """
-        n_gpu = torch.cuda.device_count()
-        if n_gpu_use > 0 and n_gpu == 0:
-            self.logger.warning("Warning: There\'s no GPU available on this machine,"
-                                "training will be performed on CPU.")
-            n_gpu_use = 0
-        if n_gpu_use > n_gpu:
-            self.logger.warning("Warning: The number of GPU\'s configured to use is {}, but only {} are available "
-                                "on this machine.".format(n_gpu_use, n_gpu))
-            n_gpu_use = n_gpu
-        device = torch.device('cuda:0' if n_gpu_use > 0 else 'cpu')
-        list_ids = list(range(n_gpu_use))
-        return device, list_ids
+                if epoch % self.save_period == 0:
+                    self._save_checkpoint(epoch, save_best=best)
+                elif best:
+                    self._save_checkpoint(epoch, save_best=True, best_only=True)
 
     def _save_checkpoint(self, epoch, save_best=False, best_only=False):
         """
@@ -143,7 +124,7 @@ class BaseTrainer:
         state = {
             'arch': arch,
             'epoch': epoch,
-            'state_dict': self.model.state_dict(),
+            'state_dict': self.model.module.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'monitor_best': self.mnt_best,
             'config': self.config,

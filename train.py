@@ -1,7 +1,13 @@
 import argparse
 import collections
+import os 
+import subprocess
+
 import torch
 import numpy as np
+import torch.distributed as dist
+from torch.utils.data import DistributedSampler
+
 import data_loader.data_loaders as module_data
 import model.loss as module_loss
 import model.metric as module_metric
@@ -45,7 +51,8 @@ def main(config):
         if config["lr_scheduler"]["type"] == "CustomLR":
             lr_scheduler_args = config["lr_scheduler"]["args"]
             gamma = lr_scheduler_args["gamma"] if "gamma" in lr_scheduler_args else 0.1
-            print("Scheduler step1, step2, warmup_epoch, gamma:", (lr_scheduler_args["step1"], lr_scheduler_args["step2"], lr_scheduler_args["warmup_epoch"], gamma))
+            if dist.get_rank() == 0:
+                print("Scheduler step1, step2, warmup_epoch, gamma:", (lr_scheduler_args["step1"], lr_scheduler_args["step2"], lr_scheduler_args["warmup_epoch"], gamma))
             def lr_lambda(epoch):
                 if epoch >= lr_scheduler_args["step2"]:
                     lr = gamma * gamma
@@ -72,7 +79,56 @@ def main(config):
                       lr_scheduler=lr_scheduler)
 
     trainer.train()
-
+    
+def setup_dist(args, port=None, backend="nccl", verbose=False):
+    if dist.is_initialized():
+        return
+    if args.slurm:
+        proc_id = int(os.environ["SLURM_PROCID"])
+        ntasks = int(os.environ["SLURM_NTASKS"])
+        node_list = os.environ["SLURM_NODELIST"]
+        num_gpus = torch.cuda.device_count()
+        addr = subprocess.getoutput(f"scontrol show hostname {node_list} | head -n1")
+        # specify master port
+        if port is not None:
+            os.environ["MASTER_PORT"] = str(port)
+        elif "MASTER_PORT" in os.environ:
+            pass # use MASTER_PORT in the environment variable
+        else:
+            os.environ["MASTER_PORT"] = "29500"
+        # specify master address
+        if "MASTER_ADDR" not in os.environ:
+            os.environ["MASTER_ADDR"] = addr
+        os.environ["WORLD_SIZE"] = str(ntasks)
+        os.environ["LOCAL_RANK"] = str(proc_id % num_gpus)
+        os.environ["RANK"] = str(proc_id)
+        
+        rank = int(os.environ["RANK"])
+        local_rank = int(os.environ["LOCAL_RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        # if the OS is Windows or macOS, use gloo instead of nccl
+        dist.init_process_group(backend=backend)
+        # set distributed device
+        device = torch.device("cuda:{}".format(local_rank))
+        torch.cuda.set_device(device)
+        if verbose:
+            print("Using device: {}".format(device))
+            print(f"local rank: {local_rank}, global rank: {rank}, world size: {world_size}")
+        return rank, local_rank, world_size, device
+    else:
+        if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+            rank = int(os.environ["RANK"])
+            world_size = int(os.environ['WORLD_SIZE'])
+            if verbose:
+                print(f"RANK and WORLD_SIZE in environ: {rank}/{world_size}")
+        else:
+            rank = -1
+            world_size = -1
+        local_rank = args.local_rank
+        torch.cuda.set_device(args.local_rank)
+        device = torch.device("cuda", args.local_rank)
+        dist.init_process_group(backend=backend, init_method='env://', world_size=world_size, rank=rank)
+        return rank, local_rank, world_size, device
 
 if __name__ == '__main__':
     args = argparse.ArgumentParser(description='PyTorch Template')
@@ -82,6 +138,11 @@ if __name__ == '__main__':
                       help='path to latest checkpoint (default: None)')
     args.add_argument('-d', '--device', default=None, type=str,
                       help='indices of GPUs to enable (default: all)')
+    args.add_argument('--slurm', action='store_true', default=False,
+                      help='enable slurm ddp running')
+    # distributed training
+    args.add_argument("--local_rank", type=int, 
+                      help='local rank for DistributedDataParallel')
 
     # custom cli options to modify configuration from default values given in json file.
     CustomArgs = collections.namedtuple('CustomArgs', 'flags type target')
@@ -106,4 +167,6 @@ if __name__ == '__main__':
         CustomArgs(['--distill_checkpoint'], type=str, target='distill_checkpoint')
     ]
     config = ConfigParser.from_args(args, options)
+    rank, local_rank, world_size, device = setup_dist(args.parse_args(), verbose=True)
+    setattr(config, 'local_rank', local_rank)
     main(config)

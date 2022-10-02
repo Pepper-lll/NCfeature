@@ -2,6 +2,7 @@ from tqdm import tqdm
 import numpy as np
 import torch
 from torchvision.utils import make_grid
+import torch.distributed as dist
 
 from base import BaseTrainer
 from utils import inf_loop, MetricTracker, load_state_dict, rename_parallel_state_dict, autocast, use_fp16
@@ -58,7 +59,7 @@ class Trainer(BaseTrainer):
         self.valid_data_loader = valid_data_loader
         self.do_validation = self.valid_data_loader is not None
         self.lr_scheduler = lr_scheduler
-        self.log_step = int(np.sqrt(data_loader.batch_size))
+        self.log_step = int(np.sqrt(data_loader.batch_size * dist.get_world_size()))
 
         self.train_metrics = MetricTracker('loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
         self.valid_metrics = MetricTracker('loss', *[m.__name__ for m in self.metric_ftns], writer=self.writer)
@@ -77,6 +78,8 @@ class Trainer(BaseTrainer):
         if hasattr(self.criterion, "_hook_before_epoch"):
             self.criterion._hook_before_epoch(epoch)
 
+        if hasattr(self.data_loader.sampler, 'set_epoch'):
+            self.data_loader.sampler.set_epoch(epoch)
         for batch_idx, data in enumerate(tqdm(self.data_loader)):
             if self.distill and len(data) == 4:
                 data, target, idx, contrast_idx = data
@@ -157,7 +160,7 @@ class Trainer(BaseTrainer):
             for met in self.metric_ftns:
                 self.train_metrics.update(met.__name__, met(output, target, return_length=True))
 
-            if batch_idx % self.log_step == 0:
+            if batch_idx % self.log_step == 0 and dist.get_rank() == 0:
                 self.logger.debug('Train Epoch: {} {} Loss: {:.6f} max group LR: {:.4f} min group LR: {:.4f}'.format(
                     epoch,
                     self._progress(batch_idx),
@@ -170,7 +173,7 @@ class Trainer(BaseTrainer):
                 break
         log = self.train_metrics.result()
 
-        if self.do_validation and epoch % 20 == 0:
+        if self.do_validation and epoch%20==0 and dist.get_rank() == 0:
             self.logger.info(f"Start validation at epoch {epoch} ...")
             val_log = self._valid_epoch(epoch)
             log.update(**{'val_'+k : v for k, v in val_log.items()})

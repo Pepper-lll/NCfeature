@@ -4,6 +4,8 @@ import numpy as np
 import os, sys
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data.distributed import DistributedSampler
+import torch.distributed as dist
 from base import BaseDataLoader
 from PIL import Image
 
@@ -121,7 +123,8 @@ class ImageNetLTDataLoader(DataLoader):
             else:
                 print("Test set will not be evaluated with balanced sampler, nothing is done to make it balanced")
         else:
-            sampler = None
+            sampler = DistributedSampler(self.dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank()) if dist.is_available() and dist.is_initialized() else None
+            shuffle = False
         
         self.shuffle = shuffle
         self.init_kwargs = {

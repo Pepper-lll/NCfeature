@@ -7,7 +7,6 @@ from datetime import datetime
 from logger import setup_logging
 from utils import read_json, write_json
 
-
 class ConfigParser:
     def __init__(self, config, resume=None, modification=None, load_crt=None, run_id=None):
         """
@@ -35,8 +34,8 @@ class ConfigParser:
 
         # make directory for saving checkpoints and log.
         exist_ok = run_id == ''
-        self.save_dir.mkdir(parents=True, exist_ok=exist_ok)
-        self.log_dir.mkdir(parents=True, exist_ok=exist_ok)
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
 
         # save updated config file to the checkpoint dir
         write_json(self.config, self.save_dir / 'config.json')
@@ -119,6 +118,10 @@ class ConfigParser:
     def __getitem__(self, name):
         """Access items like ordinary dict."""
         return self.config[name]
+    
+    def __setitem__(self, name, value):
+        """Set items like ordinary dict."""
+        self.config[name] = value
 
     def get_logger(self, name, verbosity=2):
         msg_verbosity = 'verbosity option {} is invalid. Valid options are {}.'.format(verbosity, self.log_levels.keys())
