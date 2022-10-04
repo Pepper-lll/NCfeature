@@ -285,8 +285,8 @@ class ResNext(nn.Module):
                 expert_help_target = (~correctness[:, i]) & correctness[:, i+1:].any(dim=1)
                 expert_help_pred = expert_help_preds[:, i]
                 
-                print("Helps ({}):".format(i+1), expert_help_target.sum().item() / expert_help_target.size(0))
-                print("Prediction ({}):".format(i+1), (torch.sigmoid(expert_help_pred) > 0.5).sum().item() / expert_help_target.size(0), (torch.sigmoid(expert_help_pred) > 0.3).sum().item() / expert_help_target.size(0))
+                # print("Helps ({}):".format(i+1), expert_help_target.sum().item() / expert_help_target.size(0))
+                # print("Prediction ({}):".format(i+1), (torch.sigmoid(expert_help_pred) > 0.5).sum().item() / expert_help_target.size(0), (torch.sigmoid(expert_help_pred) > 0.3).sum().item() / expert_help_target.size(0))
                 
                 loss += F.binary_cross_entropy_with_logits(expert_help_pred, expert_help_target.float(), pos_weight=expert_help_pred.new_tensor([self.pos_weight]))
             
@@ -300,7 +300,7 @@ class ResNext(nn.Module):
                 expert_help_pred = self.pred_expert_help((self.feat, output[expert_next] / i), i-1).view((-1,))
                 if not self.force_all: # For evaluating FLOPs
                     expert_next[expert_next.clone()] = torch.sigmoid(expert_help_pred) > 0.5
-                print("expert ({}):".format(i), expert_next.sum().item() / expert_next.size(0))
+                # print("expert ({}):".format(i), expert_next.sum().item() / expert_next.size(0))
                 
                 if not expert_next.any():
                     break

@@ -39,7 +39,10 @@ def rename_parallel_state_dict(state_dict):
     return count
 
 def load_state_dict(model, state_dict, no_ignore=False):
-    own_state = model.state_dict()
+    if hasattr(model, 'module'):
+        own_state = model.module.state_dict()
+    else:
+        own_state = model.state_dict()
     count = 0
     for name, param in state_dict.items():
         if name not in own_state: # ignore

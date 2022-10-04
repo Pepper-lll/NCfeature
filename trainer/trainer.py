@@ -160,20 +160,20 @@ class Trainer(BaseTrainer):
             for met in self.metric_ftns:
                 self.train_metrics.update(met.__name__, met(output, target, return_length=True))
 
-            if batch_idx % self.log_step == 0 and dist.get_rank() == 0:
-                self.logger.debug('Train Epoch: {} {} Loss: {:.6f} max group LR: {:.4f} min group LR: {:.4f}'.format(
-                    epoch,
-                    self._progress(batch_idx),
-                    loss.item(),
-                    max([param_group['lr'] for param_group in self.optimizer.param_groups]),
-                    min([param_group['lr'] for param_group in self.optimizer.param_groups])))
-                self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
+            # if batch_idx % self.log_step == 0 and dist.get_rank() == 0:
+            #     self.logger.debug('Train Epoch: {} {} Loss: {:.6f} max group LR: {:.4f} min group LR: {:.4f}'.format(
+            #         epoch,
+            #         self._progress(batch_idx),
+            #         loss.item(),
+            #         max([param_group['lr'] for param_group in self.optimizer.param_groups]),
+            #         min([param_group['lr'] for param_group in self.optimizer.param_groups])))
+            #     self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
 
             if batch_idx == self.len_epoch:
                 break
         log = self.train_metrics.result()
 
-        if self.do_validation and epoch%20==0 and dist.get_rank() == 0:
+        if self.do_validation and dist.get_rank() == 0:
             self.logger.info(f"Start validation at epoch {epoch} ...")
             val_log = self._valid_epoch(epoch)
             log.update(**{'val_'+k : v for k, v in val_log.items()})
@@ -208,6 +208,8 @@ class Trainer(BaseTrainer):
                     num_samples += data.size(0)
                 else:
                     output = self.model(data)
+                    if isinstance(output, tuple):
+                        output = output[0]
                 if isinstance(output, dict):
                     output = output["output"]
                 loss = self.criterion(output, target)

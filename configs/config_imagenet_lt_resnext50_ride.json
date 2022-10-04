@@ -16,7 +16,7 @@
         "type": "ImageNetLTDataLoader",
         "args":{
             "data_dir": "/comp_robot/cv_public_dataset/imagenet1k/",
-            "batch_size": 256,
+            "batch_size": 64,
             "shuffle": true,
             "num_workers": 12
         }

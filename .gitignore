@@ -112,3 +112,4 @@ datasets/
 __MACOSX/
 
 **/*.ipynb
+ckpt/
