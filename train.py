@@ -35,11 +35,14 @@ def main(config):
 
     # build model architecture, then print to console
     model = config.init_obj('arch', module_arch)
-
     # get function handles of loss and metrics
     loss_class = getattr(module_loss, config["loss"]["type"])
     if hasattr(loss_class, "require_num_experts") and loss_class.require_num_experts:
         criterion = config.init_obj('loss', module_loss, cls_num_list=data_loader.cls_num_list, num_experts=config["arch"]["args"]["num_experts"])
+    elif loss_class.__name__ == 'RIDELossWithNC':
+        assert hasattr(model.backbone, "_feat_dim"), "model must have attribute _feat_dim"
+        criterion = config.init_obj('loss', module_loss, feat_dim=model.backbone._feat_dim, 
+                                    cls_num_list=data_loader.cls_num_list)
     else:
         criterion = config.init_obj('loss', module_loss, cls_num_list=data_loader.cls_num_list)
     metrics = [getattr(module_metric, met) for met in config['metrics']]

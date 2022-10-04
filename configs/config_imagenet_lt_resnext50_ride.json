@@ -16,7 +16,7 @@
         "type": "ImageNetLTDataLoader",
         "args":{
             "data_dir": "/comp_robot/cv_public_dataset/imagenet1k/",
-            "batch_size": 64,
+            "batch_size": 128,
             "shuffle": true,
             "num_workers": 12
         }
@@ -32,7 +32,7 @@
     },
     "add_extra_info": true,
     "loss": {
-        "type": "RIDELoss",
+        "type": "RIDELossWithNC",
         "args": {
             "reweight": true,
             "reweight_factor": 0.02,

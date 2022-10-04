@@ -128,8 +128,10 @@ class Trainer(BaseTrainer):
                     if self.add_extra_info:
                         if isinstance(output, dict):
                             logits = output["logits"]
+                            feat = output["feat"]
                             extra_info.update({
-                                "logits": logits.transpose(0, 1)
+                                "logits": logits.transpose(0, 1),
+                                "feat": feat,
                             })
                         else:
                             extra_info.update({
@@ -139,11 +141,14 @@ class Trainer(BaseTrainer):
                     if isinstance(output, dict):
                         output = output["output"]
 
-                    # TODO: add support for NC loss
                     if self.distill:
                         loss = self.criterion(student=output, target=target, teacher=teacher, extra_info=extra_info)
                     elif self.add_extra_info:
-                        loss = self.criterion(output_logits=output, target=target, extra_info=extra_info)
+                        # add NC loss after half of epochs
+                        if epoch < self.epochs // 2:
+                            loss = self.criterion(output_logits=output, target=target, extra_info=extra_info)
+                        else:
+                            loss = self.criterion(output_logits=output, target=target, extra_info=extra_info, add_NCLoss=True)
                     else:
                         loss = self.criterion(output_logits=output, target=target)
 
@@ -193,6 +198,7 @@ class Trainer(BaseTrainer):
         self.valid_metrics.reset()
         with torch.no_grad():
             if hasattr(self.model, "confidence_model") and self.model.confidence_model:
+                # EAModel
                 cumulative_sample_num_experts = torch.zeros((self.model.backbone.num_experts, ), device=self.device)
                 num_samples = 0
                 confidence_model = True
@@ -202,22 +208,25 @@ class Trainer(BaseTrainer):
                 data, target = data.to(self.device), target.to(self.device)
 
                 if confidence_model:
-                    output, sample_num_experts = self.model(data)
+                    output_logits, sample_num_experts = self.model(data)
                     num, count = torch.unique(sample_num_experts, return_counts=True)
                     cumulative_sample_num_experts[num - 1] += count
                     num_samples += data.size(0)
                 else:
                     output = self.model(data)
-                    if isinstance(output, tuple):
-                        output = output[0]
-                if isinstance(output, dict):
-                    output = output["output"]
-                loss = self.criterion(output, target)
+                    if isinstance(output, dict):
+                        output_logits = output["output"]
+                        extra_info = {
+                            "logits": output["logits"].transpose(0, 1),
+                            "feat": output["feat"],
+                        }
+                
+                loss = self.criterion(output_logits, target, extra_info=extra_info)
 
                 self.writer.set_step((epoch - 1) * len(self.valid_data_loader) + batch_idx, 'valid')
                 self.valid_metrics.update('loss', loss.item())
                 for met in self.metric_ftns:
-                    self.valid_metrics.update(met.__name__, met(output, target, return_length=True))
+                    self.valid_metrics.update(met.__name__, met(output_logits, target, return_length=True))
                 self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
 
             if confidence_model:

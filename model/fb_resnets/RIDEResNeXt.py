@@ -132,6 +132,8 @@ class ResNext(nn.Module):
                 layer4_output_dim = 384
             else:
                 layer4_output_dim = 512
+                
+        self._feat_dim = layer4_output_dim * block.expansion
         
         self.layer3s = nn.ModuleList([self._make_layer(block, layer3_output_dim, layers[2], stride=2) for _ in range(num_experts)])
         self.inplanes = self.next_inplanes

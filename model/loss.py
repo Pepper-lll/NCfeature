@@ -282,3 +282,115 @@ class RIDELossWithDistill(nn.Module):
             distill_loss = distill_temperature * distill_temperature * distill_loss
             loss += self.additional_distill_loss_factor * distill_loss
         return loss
+
+class RIDELossWithNC(nn.Module):
+    def __init__(self, feat_dim=None, cls_num_list=None, ride_loss_factor=1.0, 
+                 NC1_factor=0.05, NC2_factor=1., reg_factor=1e-4, **kwargs):
+        super().__init__()
+        self.feat_dim = feat_dim
+        self.NC1_factor = NC1_factor
+        self.NC2_factor = NC2_factor
+        self.reg_factor = reg_factor
+        self.NCLoss = NCLoss(num_classes=len(cls_num_list), feat_dim=feat_dim)
+        
+        self.ride_loss = RIDELoss(cls_num_list=cls_num_list, **kwargs)
+        self.ride_loss_factor = ride_loss_factor
+
+    def to(self, device):
+        super().to(device)
+        self.ride_loss = self.ride_loss.to(device)
+        self.NCLoss = self.NCLoss.to(device)
+        return self
+
+    def _hook_before_epoch(self, epoch):
+        self.ride_loss._hook_before_epoch(epoch)
+
+    def forward(self, output_logits, target, extra_info=None, add_NCLoss=False):
+        ride_loss = self.ride_loss(output_logits, target, extra_info)
+        
+        assert 'feat' in extra_info, "feat must be provided for NC loss"
+        feats = extra_info['feat'] # (B, #experts, feat_dim)
+        feats = feats.mean(dim=1) # (B, feat_dim)
+        if add_NCLoss:
+            NC_out = self.NCLoss(feats, target)
+            NC1loss = NC_out['NC1loss'] * self.NC1_factor
+            NC2loss = NC_out['NC1loss'] * self.NC2_factor
+            CenterLoss = NC_out['CenterLoss'] * self.reg_factor
+            return self.ride_loss_factor * ride_loss + NC1loss + NC2loss + CenterLoss
+        else:
+            return self.ride_loss_factor * ride_loss
+
+class NCLoss(nn.Module):
+    '''
+    Modified Center loss, 1 / n_k ||h-miu||
+    '''
+    def __init__(self, num_classes, feat_dim):
+        super(NCLoss, self).__init__()
+        self.num_classes = num_classes
+        self.feat_dim = feat_dim
+        self.means = nn.Parameter(torch.randn(num_classes, feat_dim))
+        
+    def to(self, device):
+        super().to(device)
+        self.means = self.means.to(device)
+        return self
+            
+    def NC2Loss(self):
+        '''
+        NC2 loss: maximize the average minimum angle of each centered class mean
+        Returns:
+            loss: NC2 loss
+            max_cosine: maximum cosine similarity of each centered class mean
+        '''
+        means = self.means
+        g_mean = means.mean(dim=0)
+        centered_mean = means - g_mean
+        means_ = F.normalize(centered_mean, p=2, dim=1)
+        cosine = torch.matmul(means_, means_.t())
+        # make sure that the diagnonal elements cannot be selected
+        cosine = cosine - 2. * torch.diag(torch.diag(cosine))
+        max_cosine = cosine.max().clamp(-0.99999, 0.99999)
+        # print('min angle:', min_angle)
+        # maxmize the minimum angle
+        # dim=1 means the maximum angle of the other class to each class
+        loss = -torch.acos(cosine.max(dim=1)[0].clamp(-0.99999, 0.99999)).mean()
+
+        return loss, max_cosine
+    
+    def CenterLoss(self):
+        means = self.means
+        reg = means.mean(dim=0).norm() ** 2
+        return reg
+
+    def forward(self, x, labels):
+        """
+        Args:
+            x: feature matrix with shape (batch_size, feat_dim).
+            labels: ground truth labels with shape (batch_size).
+        """
+        batch_size = x.size(0)
+        device = x.device
+        distmat = torch.pow(x, 2).sum(dim=1, keepdim=True).expand(batch_size, self.num_classes) + \
+                  torch.pow(self.means, 2).sum(dim=1, keepdim=True).expand(self.num_classes, batch_size).t()
+        distmat.addmm_(x, self.means.t(), beta=1, alpha=-2)
+
+        classes = torch.arange(self.num_classes).long().to(device)
+        labels = labels.unsqueeze(1).expand(batch_size, self.num_classes)
+        mask = labels.eq(classes.expand(batch_size, self.num_classes))
+
+        dist = distmat * mask.float()
+        D = torch.sum(dist, dim=0)
+        N = mask.float().sum(dim=0) + 1e-10
+        NC1loss = (D / N).clamp(min=1e-12, max=1e+12).sum() / self.num_classes
+        
+        NC2Loss, max_cosine = self.NC2Loss()
+        CenterLoss = self.CenterLoss()
+
+        out = {
+            'NC1loss': NC1loss,
+            'NC2Loss': NC2Loss,
+            'CenterLoss': CenterLoss,
+            'max_cosine': max_cosine,
+            'class_means': self.means
+        }
+        return out
