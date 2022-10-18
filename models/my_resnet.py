@@ -48,7 +48,7 @@ class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None):
+                 base_width=64, dilation=1, norm_layer=None, outdim=0):
         super(BasicBlock, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -60,8 +60,14 @@ class BasicBlock(nn.Module):
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = norm_layer(planes)
         self.relu = nn.ReLU(inplace=True)
-        self.conv2 = conv3x3(planes, planes)
-        self.bn2 = norm_layer(planes)
+        if outdim == 0:
+            self.conv2 = conv3x3(planes, planes)
+            self.bn2 = norm_layer(planes)
+        else:
+            self.conv2 = conv3x3(planes, outdim)
+            self.bn2 = norm_layer(outdim)
+        # self.conv2 = conv3x3(planes, planes)
+        # self.bn2 = norm_layer(planes)
         self.downsample = downsample
         self.stride = stride
 
@@ -94,7 +100,7 @@ class Bottleneck(nn.Module):
     expansion = 4
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, groups=1,
-                 base_width=64, dilation=1, norm_layer=None):
+                 base_width=64, dilation=1, norm_layer=None, outdim=0):
         super(Bottleneck, self).__init__()
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
@@ -104,8 +110,14 @@ class Bottleneck(nn.Module):
         self.bn1 = norm_layer(width)
         self.conv2 = conv3x3(width, width, stride, groups, dilation)
         self.bn2 = norm_layer(width)
-        self.conv3 = conv1x1(width, planes * self.expansion)
-        self.bn3 = norm_layer(planes * self.expansion)
+        if outdim == 0:
+            self.conv3 = conv1x1(width, planes*self.expansion)
+            self.bn3 = norm_layer(planes*self.expansion)
+        else:
+            self.conv3 = conv1x1(width, outdim)
+            self.bn3 = norm_layer(outdim)
+        # self.conv3 = conv1x1(width, planes * self.expansion)
+        # self.bn3 = norm_layer(planes * self.expansion)
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
@@ -168,7 +180,7 @@ class ResNet(nn.Module):
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
                                         dilate=replace_stride_with_dilation[2])
             self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-            self.register_buffer('centers', (torch.rand(num_classes, 512 * block.expansion) - 0.5) * 2)
+            # self.register_buffer('centers', (torch.rand(num_classes, 512 * block.expansion) - 0.5) * 2)
             if use_norm:
                 self.fc = NormedLinear(512 * block.expansion, num_classes)
             else:
@@ -177,7 +189,7 @@ class ResNet(nn.Module):
             self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
                                         dilate=replace_stride_with_dilation[2], outdim=num_classes)
             self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-            self.register_buffer('centers', (torch.rand(num_classes, 512 * block.expansion) - 0.5) * 2)
+            # self.register_buffer('centers', (torch.rand(num_classes, 512 * block.expansion) - 0.5) * 2)
             self.fc = nn.Linear(num_classes, num_classes)
 
         for m in self.modules():
@@ -206,7 +218,7 @@ class ResNet(nn.Module):
                 elif isinstance(m, BasicBlock):
                     nn.init.constant_(m.bn2.weight, 0)
 
-    def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
+    def _make_layer(self, block, planes, blocks, stride=1, dilate=False, outdim=0):
         norm_layer = self._norm_layer
         downsample = None
         previous_dilation = self.dilation
@@ -227,8 +239,20 @@ class ResNet(nn.Module):
             layers.append(block(self.inplanes, planes, groups=self.groups,
                                 base_width=self.base_width, dilation=self.dilation,
                                 norm_layer=norm_layer))
+        downsample = None
+        if outdim != 0:
+            downsample = nn.Sequential(
+                conv1x1(self.inplanes, outdim),
+                norm_layer(outdim),
+            )
+
+        layers.append(block(self.inplanes, planes, groups=self.groups,
+                            base_width=self.base_width, dilation=self.dilation,
+                            norm_layer=norm_layer, downsample=downsample, outdim=outdim))
 
         return nn.Sequential(*layers)
+
+  
 
     def _forward_impl(self, x):
         # See note [TorchScript super()]
